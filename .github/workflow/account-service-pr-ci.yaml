@@ -1,5 +1,6 @@
 name: Account Service - PR CI
 
+# Trigger the CI pipeline when a Pull Request targets the main branch.
 on:
   pull_request:
     branches:
@@ -58,8 +59,8 @@ jobs:
           mvn sonar:sonar \		
             -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
             -Dsonar.token=${{ secrets.SONAR_TOKEN }}
-			// The token is generated inside SonarQube. SonarQube -> My Account / Profile -> Security -> Generate Token -> Copy token
-			// GitHub Repository -> Settings -> Secrets and variables -> Actions -> New repository secret -> SONAR_HOST_URL & SONAR_TOKEN
+			# The token is generated inside SonarQube. SonarQube -> My Account / Profile -> Security -> Generate Token -> Copy token
+			# GitHub Repository -> Settings -> Secrets and variables -> Actions -> New repository secret -> SONAR_HOST_URL & SONAR_TOKEN
 
   security-scan:
     name: Security Scan
