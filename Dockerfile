@@ -8,9 +8,6 @@ WORKDIR /build
 # Copy dependency definition first
 COPY pom.xml .
 
-# Download dependencies
-RUN mvn dependency:go-offline -B
-
 # Copy application source
 COPY src ./src
 
