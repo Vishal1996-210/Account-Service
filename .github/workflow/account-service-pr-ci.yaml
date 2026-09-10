@@ -1,0 +1,101 @@
+name: Account Service - PR CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  build-test:
+    name: Build & Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # 1. Checkout PR code
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      # 2. Setup Java
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 3. Compile and run unit tests
+      - name: Run Maven Tests
+        run: mvn clean test
+
+      # 4. Generate JaCoCo coverage report
+      - name: Generate Test Coverage Report
+        run: mvn jacoco:report
+
+  code-quality:
+    name: SonarQube Code Quality
+    runs-on: ubuntu-latest
+    needs: build-test //SonarQube waits for Build & Test job to pass.
+
+    steps:
+
+      # Checkout PR code
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      # Setup Java
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Run SonarQube analysis
+      - name: SonarQube Analysis
+        run: |
+          mvn sonar:sonar \		
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+			// The token is generated inside SonarQube. SonarQube -> My Account / Profile -> Security -> Generate Token -> Copy token
+			// GitHub Repository -> Settings -> Secrets and variables -> Actions -> New repository secret -> SONAR_HOST_URL & SONAR_TOKEN
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build-test
+
+    steps:
+
+      # Checkout PR code
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      # Scan source code for leaked secrets
+      - name: Secret Scan
+        uses: gitleaks/gitleaks-action@v2 
+
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: build-test
+
+    steps:
+
+      # Checkout PR code
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      # Setup Java
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Scan Maven dependencies
+      - name: Dependency Check
+        run: |
+          mvn org.owasp:dependency-check-maven:check
