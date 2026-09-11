@@ -8,8 +8,8 @@ on:
 
 jobs:
 
-  build-test-sonarqube:
-    name: Build, Unit Tests & SonarQube Code Quality
+  compile-unittest-sonarqube:
+    name: Compile, Unit Tests & SonarQube Code Quality
     runs-on: ubuntu-latest
 
     steps:
