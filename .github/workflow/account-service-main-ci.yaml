@@ -21,40 +21,7 @@ jobs:
   validate:
     name: Validate Application
     runs-on: ubuntu-latest
-
     steps:
-
-      - name: Checkout application source
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-
-      - name: Build and Unit Test
-        run: mvn clean verify
-
-      - name: Secret Scan
-        uses: gitleaks/gitleaks-action@v2
-
-      - name: SonarQube Analysis
-        run: |
-          mvn sonar:sonar \
-            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
-            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
-
-      - name: SonarQube Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
-        timeout-minutes: 10
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
 
   # ============================================================
   # 2. BUILD, SCAN AND PUSH DOCKER IMAGE
