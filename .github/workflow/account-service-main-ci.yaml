@@ -1,0 +1,175 @@
+name: CI - Build, Scan, Push and Update GitOps
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: account-service
+
+jobs:
+
+  # ============================================================
+  # 1. VALIDATE APPLICATION
+  # ============================================================
+  validate:
+    name: Validate Application
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout application source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build and Unit Test
+        run: mvn clean verify
+
+      - name: Secret Scan
+        uses: gitleaks/gitleaks-action@v2
+
+      - name: SonarQube Analysis
+        run: |
+          mvn sonar:sonar \
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+
+      - name: SonarQube Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 10
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+
+  # ============================================================
+  # 2. BUILD, SCAN AND PUSH DOCKER IMAGE
+  # ============================================================
+  build-scan-push:
+    name: Build, Scan and Push Image
+    needs: validate
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+
+      - name: Checkout application source
+        uses: actions/checkout@v6
+
+      # --------------------------------------------------------
+      # Generate immutable image tag
+      # --------------------------------------------------------
+      - name: Set image tag
+        run: |
+          echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      # --------------------------------------------------------
+      # Configure AWS using GitHub OIDC
+      # --------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # --------------------------------------------------------
+      # Login to Amazon ECR
+      # --------------------------------------------------------
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # --------------------------------------------------------
+      # Build Docker image
+      # --------------------------------------------------------
+      - name: Build Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            .
+
+      # --------------------------------------------------------
+      # Scan Docker image
+      # --------------------------------------------------------
+      - name: Scan Docker image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}'
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      # --------------------------------------------------------
+      # Push image to Amazon ECR
+      # --------------------------------------------------------
+      - name: Push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker push \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+
+  # ============================================================
+  # 3. UPDATE GITOPS REPOSITORY
+  # ============================================================
+  update-gitops:
+    name: Update GitOps Manifest
+    needs: build-scan-push
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v6
+        with:
+          repository: my-org/account-gitops
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+
+      - name: Update image tag
+        working-directory: gitops
+        run: |
+          sed -i \
+            "s|image: .*account-service:.*|image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${GITHUB_SHA}|" \
+            kubernetes/account-service/deployment.yaml
+
+      - name: Show changed manifest
+        working-directory: gitops
+        run: |
+          git diff
+
+      - name: Commit and push changes
+        working-directory: gitops
+        run: |
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add kubernetes/account-service/deployment.yaml
+
+          git commit \
+            -m "Update account-service image to ${GITHUB_SHA}" \
+            || echo "No changes to commit"
+
+          git push
