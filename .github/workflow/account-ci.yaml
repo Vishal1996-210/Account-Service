@@ -1,0 +1,385 @@
+name: Account Service CI/CD
+
+on:
+  pull_request:
+    branches:
+      - main
+
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - '.github/workflows/account-ci.yaml'
+
+  push:
+    branches:
+      - main
+
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - '.github/workflows/account-ci.yaml'
+
+
+# ------------------------------------------------------------
+# Default permissions
+# ------------------------------------------------------------
+
+permissions:
+  contents: read
+
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: hsbc-prod-account-service
+
+
+jobs:
+
+  # ==========================================================
+  # 1. Build, Unit Test, JaCoCo and SonarQube
+  # ==========================================================
+
+  build-test-quality:
+
+    name: Build, Test and Code Quality
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------------------------
+      # Checkout application source code
+      # --------------------------------------------------------
+
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+
+      # --------------------------------------------------------
+      # Setup Java 17
+      # --------------------------------------------------------
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+
+      # --------------------------------------------------------
+      # Verify Java and Maven
+      # --------------------------------------------------------
+
+      - name: Verify Java and Maven
+        run: |
+          java -version
+          mvn -version
+
+
+      # --------------------------------------------------------
+      # Build, Unit Test, JaCoCo and SonarQube
+      # --------------------------------------------------------
+
+      - name: Build, test and SonarQube analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+        run: |
+          mvn --batch-mode clean verify sonar:sonar \
+            -Dsonar.projectKey=account-service \
+            -Dsonar.projectName=account-service \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
+
+      # --------------------------------------------------------
+      # Upload test and JaCoCo reports
+      # --------------------------------------------------------
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: account-test-coverage-report
+
+          path: |
+            target/surefire-reports/
+            target/site/jacoco/
+
+          if-no-files-found: ignore
+
+
+      # --------------------------------------------------------
+      # SonarQube Quality Gate
+      # --------------------------------------------------------
+
+      - name: SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+
+        timeout-minutes: 10
+
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+
+  # ==========================================================
+  # 2. Gitleaks Secret Scan
+  # ==========================================================
+
+  secret-scan:
+
+    name: Gitleaks Secret Scan
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------------------------
+      # Checkout source code
+      # --------------------------------------------------------
+
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+
+      # --------------------------------------------------------
+      # Run Gitleaks
+      # --------------------------------------------------------
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+  # ==========================================================
+  # 3. Docker Build, Trivy Scan and ECR Push
+  # ==========================================================
+
+  docker-security-publish:
+
+    name: Build, Scan and Publish Docker Image
+
+    runs-on: ubuntu-latest
+
+    needs:
+      - build-test-quality
+      - secret-scan
+
+    # --------------------------------------------------------
+    # OIDC permission is required to assume AWS IAM role
+    # --------------------------------------------------------
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+
+      # --------------------------------------------------------
+      # Checkout application source code
+      # --------------------------------------------------------
+
+      - name: Checkout source code
+        uses: actions/checkout@v6
+
+
+      # --------------------------------------------------------
+      # Setup Docker Buildx
+      # --------------------------------------------------------
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+
+      # --------------------------------------------------------
+      # Build Docker image
+      # --------------------------------------------------------
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --pull \
+            -t account-service:${GITHUB_SHA} \
+            .
+
+
+      # --------------------------------------------------------
+      # Scan Docker image for vulnerabilities
+      # --------------------------------------------------------
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.36.0
+
+        with:
+          image-ref: account-service:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+
+      # --------------------------------------------------------
+      # Configure AWS credentials using GitHub OIDC
+      # --------------------------------------------------------
+
+      - name: Configure AWS credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+        uses: aws-actions/configure-aws-credentials@v6
+
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+
+      # --------------------------------------------------------
+      # Login to Amazon ECR
+      # --------------------------------------------------------
+
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+        id: login-ecr
+
+        uses: aws-actions/amazon-ecr-login@v2
+
+
+      # --------------------------------------------------------
+      # Tag the already scanned image for ECR
+      # --------------------------------------------------------
+
+      - name: Tag Docker image for ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+        run: |
+          docker tag \
+            account-service:${GITHUB_SHA} \
+            ${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}
+
+
+      # --------------------------------------------------------
+      # Push image to ECR
+      # --------------------------------------------------------
+
+      - name: Push Docker image to ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+        run: |
+          docker push \
+            ${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}
+
+
+      # --------------------------------------------------------
+      # Display published image
+      # --------------------------------------------------------
+
+      - name: Display published image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+        run: |
+          echo "Image pushed successfully:"
+          echo "${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+
+
+  # ==========================================================
+  # 4. Update GitOps Repository
+  # ==========================================================
+
+  update-gitops:
+
+    name: Update GitOps Deployment
+
+    runs-on: ubuntu-latest
+
+    needs:
+      - docker-security-publish
+
+    # --------------------------------------------------------
+    # Only update GitOps after a successful push to main
+    # --------------------------------------------------------
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+
+      # --------------------------------------------------------
+      # Checkout GitOps repository
+      # --------------------------------------------------------
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v6
+
+        with:
+          repository: YOUR_GITHUB_ORG/hsbc-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+
+      # --------------------------------------------------------
+      # Update Account Service image
+      # --------------------------------------------------------
+
+      - name: Update Account Service image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+        run: |
+
+          cd gitops
+
+          IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+          sed -i \
+            "s|image: .*hsbc-prod-account-service:.*|image: ${IMAGE}|" \
+            kubernetes/prod/account/deployment.yaml
+
+          echo "Updated Account Service image:"
+          grep "image:" kubernetes/prod/account/deployment.yaml
+
+
+      # --------------------------------------------------------
+      # Commit GitOps change
+      # --------------------------------------------------------
+
+      - name: Commit GitOps change
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+
+        run: |
+
+          cd gitops
+
+          git config user.name "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add kubernetes/prod/account/deployment.yaml
+
+          git diff --cached --quiet || \
+            git commit \
+              -m "Update account-service image to ${IMAGE_TAG}"
+
+
+      # --------------------------------------------------------
+      # Push GitOps change
+      # --------------------------------------------------------
+
+      - name: Push GitOps change
+        run: |
+
+          cd gitops
+
+          git push
