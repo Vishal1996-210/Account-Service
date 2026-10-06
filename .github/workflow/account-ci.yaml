@@ -4,7 +4,6 @@ on:
   pull_request:
     branches:
       - main
-
     paths:
       - 'src/**'
       - 'pom.xml'
@@ -14,7 +13,6 @@ on:
   push:
     branches:
       - main
-
     paths:
       - 'src/**'
       - 'pom.xml'
@@ -45,7 +43,8 @@ jobs:
 
     name: Build, Test and Code Quality
 
-    runs-on: ubuntu-latest
+    # Dedicated self-hosted runner
+    runs-on: [self-hosted, linux, x64]
 
     steps:
 
@@ -60,29 +59,8 @@ jobs:
 
 
       # --------------------------------------------------------
-      # Setup Java 17
-      # --------------------------------------------------------
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-
-
-      # --------------------------------------------------------
-      # Verify Java and Maven
-      # --------------------------------------------------------
-
-      - name: Verify Java and Maven
-        run: |
-          java -version
-          mvn -version
-
-
-      # --------------------------------------------------------
-      # Build, Unit Test, JaCoCo and SonarQube
+      # Build application, run unit tests,
+      # generate JaCoCo report and perform SonarQube analysis
       # --------------------------------------------------------
 
       - name: Build, test and SonarQube analysis
@@ -104,26 +82,21 @@ jobs:
       - name: Upload test and coverage reports
         if: always()
         uses: actions/upload-artifact@v4
-
         with:
           name: account-test-coverage-report
-
           path: |
             target/surefire-reports/
             target/site/jacoco/
-
           if-no-files-found: ignore
 
 
       # --------------------------------------------------------
-      # SonarQube Quality Gate
+      # Check SonarQube Quality Gate
       # --------------------------------------------------------
 
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@v1
-
         timeout-minutes: 10
-
         env:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -137,7 +110,8 @@ jobs:
 
     name: Gitleaks Secret Scan
 
-    runs-on: ubuntu-latest
+    # Dedicated self-hosted runner
+    runs-on: [self-hosted, linux, x64]
 
     steps:
 
@@ -152,12 +126,11 @@ jobs:
 
 
       # --------------------------------------------------------
-      # Run Gitleaks
+      # Scan source code for secrets
       # --------------------------------------------------------
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
-
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -170,8 +143,10 @@ jobs:
 
     name: Build, Scan and Publish Docker Image
 
-    runs-on: ubuntu-latest
+    # Dedicated self-hosted runner
+    runs-on: [self-hosted, linux, x64]
 
+    # Run only after build/quality and secret scan succeed
     needs:
       - build-test-quality
       - secret-scan
@@ -196,6 +171,7 @@ jobs:
 
       # --------------------------------------------------------
       # Setup Docker Buildx
+      # Docker itself is pre-installed on the runner
       # --------------------------------------------------------
 
       - name: Setup Docker Buildx
@@ -220,7 +196,6 @@ jobs:
 
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.36.0
-
         with:
           image-ref: account-service:${{ github.sha }}
           format: table
@@ -231,13 +206,12 @@ jobs:
 
       # --------------------------------------------------------
       # Configure AWS credentials using GitHub OIDC
+      # Only required when pushing to ECR
       # --------------------------------------------------------
 
       - name: Configure AWS credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
         uses: aws-actions/configure-aws-credentials@v6
-
         with:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -249,9 +223,7 @@ jobs:
 
       - name: Login to Amazon ECR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
         id: login-ecr
-
         uses: aws-actions/amazon-ecr-login@v2
 
 
@@ -261,7 +233,6 @@ jobs:
 
       - name: Tag Docker image for ECR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
         run: |
           docker tag \
             account-service:${GITHUB_SHA} \
@@ -274,7 +245,6 @@ jobs:
 
       - name: Push Docker image to ECR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
         run: |
           docker push \
             ${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}
@@ -286,7 +256,6 @@ jobs:
 
       - name: Display published image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
         run: |
           echo "Image pushed successfully:"
           echo "${{ steps.login-ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
@@ -300,15 +269,14 @@ jobs:
 
     name: Update GitOps Deployment
 
-    runs-on: ubuntu-latest
+    # Dedicated self-hosted runner
+    runs-on: [self-hosted, linux, x64]
 
+    # Run only after Docker image is successfully published
     needs:
       - docker-security-publish
 
-    # --------------------------------------------------------
     # Only update GitOps after a successful push to main
-    # --------------------------------------------------------
-
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
@@ -319,7 +287,6 @@ jobs:
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v6
-
         with:
           repository: YOUR_GITHUB_ORG/hsbc-gitops
           token: ${{ secrets.GITOPS_TOKEN }}
@@ -334,9 +301,10 @@ jobs:
         env:
           IMAGE_TAG: ${{ github.sha }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
 
         run: |
-
           cd gitops
 
           IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
@@ -358,11 +326,9 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
 
         run: |
-
           cd gitops
 
           git config user.name "github-actions[bot]"
-
           git config user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -379,7 +345,5 @@ jobs:
 
       - name: Push GitOps change
         run: |
-
           cd gitops
-
           git push
