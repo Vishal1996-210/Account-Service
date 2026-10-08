@@ -1,4 +1,3 @@
-```dockerfile
 # ============================================================
 # Stage 1: Build
 # ============================================================
@@ -42,4 +41,3 @@ EXPOSE 8080
 # Distroless images do not contain a normal shell,
 # so use the Java entrypoint directly
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
-```
