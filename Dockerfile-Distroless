@@ -1,32 +1,45 @@
+```dockerfile
 # ============================================================
 # Stage 1: Build
 # ============================================================
+
+# Maven + Java 17 image used to build the Spring Boot application
 FROM maven:3.9-eclipse-temurin-17 AS build
 
+# Working directory inside the build container
 WORKDIR /build
 
-# Copy dependency definition first
+# Copy Maven configuration first
+# This allows Docker to reuse this layer when pom.xml does not change
 COPY pom.xml .
 
-# Copy application source
+# Copy application source code
 COPY src ./src
 
-# Build application JAR
+# Build the Spring Boot JAR
+# Unit tests are already executed in the GitHub Actions CI pipeline
 RUN mvn clean package -DskipTests
 
 
 # ============================================================
 # Stage 2: Runtime
 # ============================================================
+
+# Distroless Java 17 runtime image
+# "nonroot" runs the application as a non-root user
 FROM gcr.io/distroless/java17-debian12:nonroot
 
+# Working directory for the application
 WORKDIR /app
 
-# Copy only the application JAR
+# Copy only the generated JAR from the build stage
 COPY --from=build /build/target/*.jar app.jar
 
-# Application port
+# Port used by the Spring Boot application
 EXPOSE 8080
 
-# Start Spring Boot application
+# Start the Spring Boot application
+# Distroless images do not contain a normal shell,
+# so use the Java entrypoint directly
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+```
